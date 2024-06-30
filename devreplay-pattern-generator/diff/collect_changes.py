@@ -1,5 +1,7 @@
 import sys
+sys.path.append("../")
 import os
+import requests
 from csv import DictReader
 from json import dump, loads, dumps, load
 import difflib
@@ -8,11 +10,19 @@ from lang_extentions import lang_extentions
 import git
 from datetime import datetime, timedelta
 from collector.pulls_collector import PullsCollector
+from constants.paths import get_project_paths
+from _utils.setup_directories import create_directory, load_env_file
 
-with open("config.json", "r") as json_file:
+create_directory('tmp/repos')
+create_directory('tmp/pulls')
+create_directory('out/changes')
+paths = get_project_paths()
+
+with open(paths['config_path'], "r") as json_file:
     config = load(json_file)
 
-token = config.get("github_token", None)
+token = load_env_file("GITHUB_TOKEN")
+# token = config.get("github_token", None)
 lang = config["lang"]
 TN = TokeNizer(lang)
 all_author = config.get("all_author", True)
@@ -47,10 +57,13 @@ def main():
     for project in projects:
         owner = project["owner"]
         repo = project["repo"]
-        branch = project.get("branch", "master")
+        branch = project.get("branch")
+        if not branch:
+            branch = get_default_branch(owner, repo, token)
 
         clone_target_repo(owner, repo)
-        target_repo = git.Repo("data/repos/" + repo)
+        # target_repo = git.Repo("data/repos/" + repo)
+        target_repo = git.Repo(f"{paths["repo_dir"]}/{repo}")
         print(f"{owner}/{repo} ")
 
         # Learn or validate from master pull request
@@ -66,7 +79,8 @@ def main():
             print("collecting the pull changes...")
             changes_sets = make_pull_diff(target_repo, owner, repo, abstracted)
 
-            out_name = f"data/changes/{owner}_{repo}_{lang}_pulls.json"
+            # out_name = f"data/changes/{owner}_{repo}_{lang}_pulls.json"
+            out_name = f"{paths["changes_dir"]}/{owner}_{repo}_{lang}_pulls.json"
             with open(out_name, "w", encoding='utf-8') as f:
                 print("\nSuccess to collect the pull changes Output is " + out_name)
                 dump(changes_sets, f, indent=1)
@@ -77,17 +91,16 @@ def main():
             print("collecting the master changes...")
             changes_sets = make_master_diff(target_repo, owner, repo, branch, abstracted)
 
-            out_name = f"data/changes/{owner}_{repo}_{lang}_master.json"
+            # out_name = f"data/changes/{owner}_{repo}_{lang}_master.json"
+            out_name = f"{paths["changes_dir"]}/{owner}_{repo}_{lang}_master.json"
             with open(out_name, "w", encoding='utf-8') as f:
                 print("\nSuccess to collect the master changes Output is " + out_name)
                 dump(changes_sets, f, indent=1)
 
-
 def clone_target_repo(owner, repo):
-    data_repo_dir = "data/repos"
+    data_repo_dir = paths["repo_dir"]
     if not os.path.exists(f"{data_repo_dir}/{repo}"):
-        if not os.path.exists(data_repo_dir):
-            os.makedirs(data_repo_dir)
+        os.mkdir(f"{data_repo_dir}/{repo}")
         print(f"Cloning {data_repo_dir}/{repo}")
         if token is not None:
             git_url = f"https://{token}:@github.com/{owner}/{repo}.git"
@@ -99,7 +112,7 @@ def clone_target_repo(owner, repo):
 
 
 def update_repo_fetch(repo):
-    config_name = f'data/repos/{repo}/.git/config'
+    config_name = f'{paths["repo_dir"]}/{repo}/.git/config'
     origin_fetch = "[remote \"origin\"]"
     new_fetch = "fetch = +refs/pull/*/head:refs/remotes/origin/pr/*"
     with open(config_name, "r") as files:
@@ -113,7 +126,7 @@ def update_repo_fetch(repo):
 
 
 def collect_target_pulls(owner, repo, branch, token):
-    file_name = f'data/pulls/{owner}_{repo}.csv'
+    file_name = f'{paths["pulls_dir"]}/{owner}_{repo}.csv'
     if not os.path.exists(file_name):
         print(f"collecting {owner}/{repo} pulls...")
         collector = PullsCollector(token, owner, repo, branch)
@@ -125,8 +138,8 @@ def collect_target_pulls(owner, repo, branch, token):
 def make_abstracted_hunks(diff_index, is_abstract):
     out_hunks = []
     for diff_item in [x for x in diff_index.iter_change_type('M')
-                     if any([x.a_rawpath.decode('utf-8').endswith(y)
-                             for y in lang_extentions[lang]])]:
+                      if any([x.a_rawpath.decode('utf-8').endswith(y)
+                              for y in lang_extentions[lang]])]:
         try:
             source = diff_item.a_blob.data_stream.read().decode('utf-8')
             target = diff_item.b_blob.data_stream.read().decode('utf-8')
@@ -139,7 +152,6 @@ def make_abstracted_hunks(diff_index, is_abstract):
         hunks = [x for x in hunks if x["condition"] != x["consequent"]]
         hunks = list(map(loads, set(map(dumps, hunks))))
 
-        # file_path = diff_item.a_rawpath.decode('utf-8')
         if is_abstract:
             for hunk in hunks:
                 try:
@@ -150,15 +162,16 @@ def make_abstracted_hunks(diff_index, is_abstract):
                 diff_result["condition"] = code_trip(diff_result["condition"].splitlines(), True)
                 diff_result["consequent"] = code_trip(diff_result["consequent"].splitlines(), True)
                 if diff_result["condition"] == diff_result["consequent"] or\
-                    diff_result["condition"] == []:
+                   diff_result["condition"] == []:
                     continue
+                diff_result["abstracted"] = TN.get_abstract_tree_diff(hunk["condition"], hunk["consequent"])
                 out_hunks.append(diff_result)
         else:
             out_hunks.extend([{
                 "condition": x["condition"].splitlines(),
                 "consequent": x["consequent"].splitlines()
             } for x in hunks])
-    
+
     out_hunks = list(map(loads, set(map(dumps, out_hunks))))
     return out_hunks
 
@@ -200,7 +213,7 @@ def make_master_diff(target_repo, owner, repo, branch, abstracted):
             diff_index = commit.diff(sha + "~1")
         except:
             continue
-        created_at = str(datetime.fromtimestamp(commit.authored_date))
+        created_at = str(datetime.fromtimestamp(commit.authored_date))  # datetimeオブジェクトを文字列に変換
 
         if all_change:
             sys.stdout.write("\r%d/%d commits %d changes, %s" % (i, len(commits), len(change_sets), created_at))
@@ -211,9 +224,8 @@ def make_master_diff(target_repo, owner, repo, branch, abstracted):
         out_metricses = [{
             "repository": f"{owner}/{repo}",
             "sha": sha,
-            "author":author,
+            "author": author,
             "created_at": created_at,
-            # "file_path": x["file_path"],
             "condition": x["condition"],
             "consequent": x["consequent"],
             "abstracted": x["abstracted"] if abstracted else {}
@@ -221,12 +233,13 @@ def make_master_diff(target_repo, owner, repo, branch, abstracted):
         change_sets.extend(out_metricses)
         if not all_change and len(change_sets) > change_size:
             break
-        
+
     return change_sets
 
 def make_pull_diff(target_repo, owner, repo, abstracted):
     change_sets = []
-    diffs_file = "data/pulls/" + owner + "_" + repo + ".csv"
+    # diffs_file = "data/pulls/" + owner + "_" + repo + ".csv"
+    diffs_file = f"{paths['pulls_dir']}/{owner}_{repo}.csv"
     with open(diffs_file, "r", encoding="utf-8") as diffs:
         reader = DictReader(diffs)
         for i, diff_path in enumerate(reversed([x for x in reader\
@@ -268,6 +281,23 @@ def make_pull_diff(target_repo, owner, repo, abstracted):
                 return change_sets
 
         return change_sets
+
+
+def get_default_branch(owner, repo, token):
+    url = f"https://api.github.com/repos/{owner}/{repo}"
+    headers = {
+        "Authorization": f"token {token}"
+    }
+    response = requests.get(url, headers=headers)
+    response.raise_for_status()
+    repo_info = response.json()
+    return repo_info['default_branch']
+
+def filter_by_time(data, start, end):
+    start_date = datetime.strptime(start, "%Y-%m-%d %H:%M:%S")
+    end_date = datetime.strptime(end, "%Y-%m-%d %H:%M:%S")
+    return [item for item in data if start_date <= datetime.strptime(item['created_at'], "%Y-%m-%d %H:%M:%S") <= end_date]
+
 
 if __name__ == '__main__':
     main()

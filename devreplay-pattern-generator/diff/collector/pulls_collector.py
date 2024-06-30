@@ -1,10 +1,9 @@
 import json
-import sys
 from csv import DictWriter
 from datetime import datetime, timezone
 from time import sleep
 from typing import Generator, Optional
-from requests import exceptions, request, post
+from requests import exceptions, post
 from urllib.error import HTTPError
 from urllib.request import urlopen, Request
 
@@ -38,7 +37,7 @@ class PullsCollector:
             for row in self.all():
                 writer.writerow(row)
             print("\nFinish to collect the pull list. Output is " + output_path)
-
+    
     def all(self) -> Generator:
         self.cursor = None
         gene = self._generator()
@@ -127,13 +126,8 @@ class PullsCollector:
 
     def _format(self, pull: dict) -> dict:
         author = pull["author"]["login"]
-        # base_sha = [edge['node']['commit']['oid'] for edge in pull['commits']['edges']][0]
-        # participant = [participant["node"]["login"] for participant in pull["participants"]["edges"] 
-        #                 if participant["node"]["login"] != author]
-        # head_sha = commit_oids[-1]
         return {
             "author": author,
-            # "participant": participant[0] if len(participant) > 0 else "None",
             "number": pull['number'],
             "commit_len": pull['commits']['totalCount'],
             "base_commit_sha": pull['baseRefOid'],

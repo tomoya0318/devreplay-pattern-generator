@@ -16,3 +16,9 @@ config.json
 !/data/tokens/tensorflow_models_Python_ORIGINAL.json
 preFixed.java
 tmpPattern.json
+out
+libs
+tmp
+.env
+sample.py
+dist
